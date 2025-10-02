@@ -20,35 +20,32 @@ REQUEST_TIMEOUT = 5  # seconds
 HOST = os.getenv('FLASK_HOST', '0.0.0.0')
 PORT = int(os.getenv('FLASK_PORT', 5000))
 
+# Add required User-Agent header for Wikipedia
+HEADERS = {
+    "User-Agent": "KakapoChatBot/1.0 (https://example.com; contact@example.com)"
+}
+
 # Cache Wikipedia results for 1 hour (maxsize=128 queries)
 @lru_cache(maxsize=128)
 def get_wikipedia_summary(query):
     """
     Fetch summary from Wikipedia API with error handling and caching.
-    
-    Args:
-        query (str): Search query for Wikipedia
-        
-    Returns:
-        str: Wikipedia summary or error message
     """
     if not query or not query.strip():
         return "Please provide a valid search query."
     
     try:
-        # URL encode the query to handle special characters
         encoded_query = quote(query.strip())
         url = f"{WIKIPEDIA_API_BASE}{encoded_query}"
         
         logger.info(f"Fetching Wikipedia summary for: {query}")
         
-        # Make request with timeout
-        response = requests.get(url, timeout=REQUEST_TIMEOUT)
+        # Make request with headers + timeout
+        response = requests.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
         
         if response.status_code == 200:
             data = response.json()
             
-            # Validate response structure
             if 'extract' in data and data['extract']:
                 logger.info(f"Successfully retrieved summary for: {query}")
                 return data['extract']
@@ -84,10 +81,8 @@ def get_wikipedia_summary(query):
 def webhook():
     """
     Dialogflow webhook endpoint.
-    Receives requests from Dialogflow and returns Wikipedia summaries.
     """
     try:
-        # Get JSON payload
         req = request.get_json(force=True, silent=True)
         
         if not req:
@@ -96,7 +91,6 @@ def webhook():
                 "fulfillmentText": "Sorry, I received an invalid request."
             }), 400
         
-        # Extract user query from Dialogflow request
         query_result = req.get("queryResult", {})
         user_query = query_result.get("queryText", "").strip()
         
@@ -111,7 +105,6 @@ def webhook():
         # Get Wikipedia summary
         answer = get_wikipedia_summary(user_query)
         
-        # Return response to Dialogflow
         return jsonify({
             "fulfillmentText": answer
         })
@@ -124,7 +117,6 @@ def webhook():
 
 @app.route("/health", methods=["GET"])
 def health_check():
-    """Health check endpoint for monitoring."""
     return jsonify({
         "status": "healthy",
         "service": "Wikipedia Webhook"
@@ -132,14 +124,12 @@ def health_check():
 
 @app.errorhandler(404)
 def not_found(error):
-    """Handle 404 errors."""
     return jsonify({
         "error": "Endpoint not found"
     }), 404
 
 @app.errorhandler(500)
 def internal_error(error):
-    """Handle 500 errors."""
     logger.error(f"Internal server error: {str(error)}")
     return jsonify({
         "error": "Internal server error"
@@ -147,9 +137,6 @@ def internal_error(error):
 
 if __name__ == "__main__":
     logger.info(f"Starting Flask server on {HOST}:{PORT}")
-    
-    # Note: For production, use a WSGI server like Gunicorn
-    # Example: gunicorn -w 4 -b 0.0.0.0:5000 app:app
     app.run(
         host=HOST,
         port=PORT,
