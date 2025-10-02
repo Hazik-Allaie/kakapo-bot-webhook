@@ -4,6 +4,8 @@ import logging
 from urllib.parse import quote
 import os
 from functools import lru_cache
+import re
+from textblob import TextBlob
 
 app = Flask(__name__)
 
@@ -15,63 +17,163 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Configuration
-WIKIPEDIA_API_BASE = "https://en.wikipedia.org/api/rest_v1/page/summary/"
-REQUEST_TIMEOUT = 5  # seconds
+WIKIPEDIA_API_BASE = "https://en.wikipedia.org/w/api.php"
+REQUEST_TIMEOUT = 5
 HOST = os.getenv('FLASK_HOST', '0.0.0.0')
 PORT = int(os.getenv('FLASK_PORT', 5000))
 
-# Add required User-Agent header for Wikipedia
 HEADERS = {
     "User-Agent": "KakapoChatBot/1.0 (https://example.com; contact@example.com)"
 }
 
-# Cache Wikipedia results for 1 hour (maxsize=128 queries)
+def clean_query(user_query: str) -> str:
+    """Clean and correct user query for Wikipedia search."""
+    query = user_query.lower().strip()
+    
+    # Remove common question words and phrases
+    fillers = [
+        "how many", "how much", "what is", "what are", "who is", "who are",
+        "tell me about", "tell me something about", "give me information about",
+        "explain", "describe", "define", "information about", "details about",
+        "are left in", "are there in", "capital of"
+    ]
+    for f in fillers:
+        query = query.replace(f, "")
+    
+    # Remove question words
+    query = re.sub(r'\b(the|world|in|of|a|an)\b', '', query)
+    
+    # Remove punctuation
+    query = re.sub(r"[^\w\s]", "", query)
+    
+    # Remove extra spaces
+    query = " ".join(query.split())
+    
+    # Spell correction
+    if query:
+        try:
+            corrected = str(TextBlob(query).correct())
+        except:
+            corrected = query
+    else:
+        corrected = query
+    
+    return corrected.strip()
+
+def search_wikipedia(search_term: str):
+    """Search Wikipedia and return the best matching page title."""
+    try:
+        params = {
+            'action': 'query',
+            'list': 'search',
+            'srsearch': search_term,
+            'format': 'json',
+            'srlimit': 1  # Get only the best result
+        }
+        
+        response = requests.get(
+            WIKIPEDIA_API_BASE,
+            params=params,
+            headers=HEADERS,
+            timeout=REQUEST_TIMEOUT
+        )
+        
+        if response.status_code == 200:
+            data = response.json()
+            search_results = data.get('query', {}).get('search', [])
+            
+            if search_results:
+                # Return the title of the best match
+                return search_results[0]['title']
+        
+        return None
+        
+    except Exception as e:
+        logger.error(f"Search error: {str(e)}")
+        return None
+
+def get_wikipedia_extract(page_title: str):
+    """Get the extract/summary for a specific Wikipedia page."""
+    try:
+        params = {
+            'action': 'query',
+            'prop': 'extracts',
+            'exintro': True,  # Only the intro section
+            'explaintext': True,  # Plain text (no HTML)
+            'titles': page_title,
+            'format': 'json'
+        }
+        
+        response = requests.get(
+            WIKIPEDIA_API_BASE,
+            params=params,
+            headers=HEADERS,
+            timeout=REQUEST_TIMEOUT
+        )
+        
+        if response.status_code == 200:
+            data = response.json()
+            pages = data.get('query', {}).get('pages', {})
+            
+            # Get the first (and only) page
+            for page_id, page_data in pages.items():
+                if 'extract' in page_data:
+                    extract = page_data['extract']
+                    # Limit to first 3 sentences for concise response
+                    sentences = extract.split('. ')
+                    if len(sentences) > 3:
+                        return '. '.join(sentences[:3]) + '.'
+                    return extract
+        
+        return None
+        
+    except Exception as e:
+        logger.error(f"Extract error: {str(e)}")
+        return None
+
 @lru_cache(maxsize=128)
 def get_wikipedia_summary(query):
     """
-    Fetch summary from Wikipedia API with error handling and caching.
+    Main function to get Wikipedia summary with search + extract.
     """
     if not query or not query.strip():
         return "Please provide a valid search query."
     
+    # Clean the query
+    cleaned_query = clean_query(query)
+    
+    if not cleaned_query:
+        cleaned_query = query  # Use original if cleaning removed everything
+    
+    logger.info(f"Original query: '{query}' -> Cleaned: '{cleaned_query}'")
+    
     try:
-        encoded_query = quote(query.strip())
-        url = f"{WIKIPEDIA_API_BASE}{encoded_query}"
+        # Step 1: Search for the best matching page
+        page_title = search_wikipedia(cleaned_query)
         
-        logger.info(f"Fetching Wikipedia summary for: {query}")
-        
-        # Make request with headers + timeout
-        response = requests.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
-        
-        if response.status_code == 200:
-            data = response.json()
-            
-            if 'extract' in data and data['extract']:
-                logger.info(f"Successfully retrieved summary for: {query}")
-                return data['extract']
-            else:
-                logger.warning(f"No extract found for: {query}")
-                return "Sorry, I couldn't find detailed information on that topic."
-        
-        elif response.status_code == 404:
-            logger.warning(f"Wikipedia page not found: {query}")
+        if not page_title:
+            logger.warning(f"No Wikipedia page found for: {cleaned_query}")
             return "Sorry, I couldn't find a Wikipedia page for that topic."
         
+        logger.info(f"Found Wikipedia page: {page_title}")
+        
+        # Step 2: Get the extract from the page
+        extract = get_wikipedia_extract(page_title)
+        
+        if extract:
+            logger.info(f"Successfully retrieved summary for: {page_title}")
+            return extract
         else:
-            logger.error(f"Wikipedia API error: {response.status_code}")
-            return "Sorry, there was an issue retrieving information from Wikipedia."
+            logger.warning(f"No extract found for page: {page_title}")
+            return "Sorry, I couldn't retrieve detailed information on that topic."
     
     except requests.exceptions.Timeout:
-        logger.error(f"Timeout while fetching: {query}")
+        logger.error(f"Timeout while fetching: {cleaned_query}")
         return "Sorry, the request took too long. Please try again."
     
     except requests.exceptions.ConnectionError:
-        logger.error(f"Connection error while fetching: {query}")
+        logger.error(f"Connection error while fetching: {cleaned_query}")
         return "Sorry, I couldn't connect to Wikipedia right now."
-    
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Request error: {str(e)}")
-        return "Sorry, there was an error processing your request."
     
     except Exception as e:
         logger.error(f"Unexpected error: {str(e)}")
@@ -79,9 +181,7 @@ def get_wikipedia_summary(query):
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
-    """
-    Dialogflow webhook endpoint.
-    """
+    """Dialogflow webhook endpoint."""
     try:
         req = request.get_json(force=True, silent=True)
         
@@ -121,6 +221,16 @@ def health_check():
         "status": "healthy",
         "service": "Wikipedia Webhook"
     }), 200
+
+@app.route("/test", methods=["GET"])
+def test_query():
+    """Test endpoint to verify Wikipedia API is working."""
+    test_query = request.args.get('q', 'Kakapo')
+    result = get_wikipedia_summary(test_query)
+    return jsonify({
+        "query": test_query,
+        "result": result
+    })
 
 @app.errorhandler(404)
 def not_found(error):
