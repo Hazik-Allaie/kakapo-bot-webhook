@@ -1,254 +1,157 @@
 from flask import Flask, request, jsonify
-import requests
-import logging
-from urllib.parse import quote
+import cv2
+import numpy as np
+import base64
+import google.generativeai as genai
 import os
-from functools import lru_cache
-import re
-from textblob import TextBlob
 
 app = Flask(__name__)
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
+# 🔑 Set up Gemini API key
+genai.configure(api_key=os.getenv("AIzaSyBjUrMg_DwG93K7YkfSdCnbnRMKPI0yMLA"))
 
-# Configuration
-WIKIPEDIA_API_BASE = "https://en.wikipedia.org/w/api.php"
-REQUEST_TIMEOUT = 5
-HOST = os.getenv('FLASK_HOST', '0.0.0.0')
-PORT = int(os.getenv('FLASK_PORT', 5000))
+# System prompt to constrain the model to kakapo topics
+KAKAPO_SYSTEM_PROMPT = """You are an expert chatbot specializing exclusively in kakapo (Strigops habroptilus), the flightless parrot native to New Zealand.
 
-HEADERS = {
-    "User-Agent": "KakapoChatBot/1.0 (https://example.com; contact@example.com)"
-}
+Your role:
+- Answer ONLY questions related to kakapo, including their biology, behavior, habitat, conservation status, breeding programs, history, and related topics.
+- If a question is NOT about kakapo, politely respond: "I'm sorry, I only have knowledge about kakapo, the endangered flightless parrot of New Zealand. Please ask me anything about kakapo!"
+- Be informative, accurate, and enthusiastic about kakapo.
+- Do not answer questions about other topics, even if asked politely or persistently.
 
-def clean_query(user_query: str) -> str:
-    """Clean and correct user query for Wikipedia search."""
-    query = user_query.lower().strip()
-    
-    # Remove common question words and phrases
-    fillers = [
-        "how many", "how much", "what is", "what are", "who is", "who are",
-        "tell me about", "tell me something about", "give me information about",
-        "explain", "describe", "define", "information about", "details about",
-        "are left in", "are there in", "capital of"
-    ]
-    for f in fillers:
-        query = query.replace(f, "")
-    
-    # Remove question words
-    query = re.sub(r'\b(the|world|in|of|a|an)\b', '', query)
-    
-    # Remove punctuation
-    query = re.sub(r"[^\w\s]", "", query)
-    
-    # Remove extra spaces
-    query = " ".join(query.split())
-    
-    # Spell correction
-    if query:
-        try:
-            corrected = str(TextBlob(query).correct())
-        except:
-            corrected = query
-    else:
-        corrected = query
-    
-    return corrected.strip()
+User question: """
 
-def search_wikipedia(search_term: str):
-    """Search Wikipedia and return the best matching page title."""
-    try:
-        params = {
-            'action': 'query',
-            'list': 'search',
-            'srsearch': search_term,
-            'format': 'json',
-            'srlimit': 1  # Get only the best result
-        }
-        
-        response = requests.get(
-            WIKIPEDIA_API_BASE,
-            params=params,
-            headers=HEADERS,
-            timeout=REQUEST_TIMEOUT
-        )
-        
-        if response.status_code == 200:
-            data = response.json()
-            search_results = data.get('query', {}).get('search', [])
-            
-            if search_results:
-                # Return the title of the best match
-                return search_results[0]['title']
-        
-        return None
-        
-    except Exception as e:
-        logger.error(f"Search error: {str(e)}")
-        return None
-
-def get_wikipedia_extract(page_title: str):
-    """Get the extract/summary for a specific Wikipedia page."""
-    try:
-        params = {
-            'action': 'query',
-            'prop': 'extracts',
-            'exintro': True,  # Only the intro section
-            'explaintext': True,  # Plain text (no HTML)
-            'titles': page_title,
-            'format': 'json'
-        }
-        
-        response = requests.get(
-            WIKIPEDIA_API_BASE,
-            params=params,
-            headers=HEADERS,
-            timeout=REQUEST_TIMEOUT
-        )
-        
-        if response.status_code == 200:
-            data = response.json()
-            pages = data.get('query', {}).get('pages', {})
-            
-            # Get the first (and only) page
-            for page_id, page_data in pages.items():
-                if 'extract' in page_data:
-                    extract = page_data['extract']
-                    # Limit to first 3 sentences for concise response
-                    sentences = extract.split('. ')
-                    if len(sentences) > 3:
-                        return '. '.join(sentences[:3]) + '.'
-                    return extract
-        
-        return None
-        
-    except Exception as e:
-        logger.error(f"Extract error: {str(e)}")
-        return None
-
-@lru_cache(maxsize=128)
-def get_wikipedia_summary(query):
+def is_kakapo_related(question):
     """
-    Main function to get Wikipedia summary with search + extract.
+    Pre-filter to check if question is likely about kakapo.
+    Uses Gemini to determine relevance.
     """
-    if not query or not query.strip():
-        return "Please provide a valid search query."
+    check_prompt = f"""Is the following question related to kakapo (the New Zealand parrot)? 
+    Consider it related if it mentions:
+    - Kakapo directly
+    - Strigops habroptilus (scientific name)
+    - New Zealand parrots in context that could include kakapo
     
-    # Clean the query
-    cleaned_query = clean_query(query)
+    Question: "{question}"
     
-    if not cleaned_query:
-        cleaned_query = query  # Use original if cleaning removed everything
-    
-    logger.info(f"Original query: '{query}' -> Cleaned: '{cleaned_query}'")
+    Answer with ONLY "YES" or "NO"."""
     
     try:
-        # Step 1: Search for the best matching page
-        page_title = search_wikipedia(cleaned_query)
-        
-        if not page_title:
-            logger.warning(f"No Wikipedia page found for: {cleaned_query}")
-            return "Sorry, I couldn't find a Wikipedia page for that topic."
-        
-        logger.info(f"Found Wikipedia page: {page_title}")
-        
-        # Step 2: Get the extract from the page
-        extract = get_wikipedia_extract(page_title)
-        
-        if extract:
-            logger.info(f"Successfully retrieved summary for: {page_title}")
-            return extract
-        else:
-            logger.warning(f"No extract found for page: {page_title}")
-            return "Sorry, I couldn't retrieve detailed information on that topic."
-    
-    except requests.exceptions.Timeout:
-        logger.error(f"Timeout while fetching: {cleaned_query}")
-        return "Sorry, the request took too long. Please try again."
-    
-    except requests.exceptions.ConnectionError:
-        logger.error(f"Connection error while fetching: {cleaned_query}")
-        return "Sorry, I couldn't connect to Wikipedia right now."
-    
+        model = genai.GenerativeModel("gemini-pro")
+        response = model.generate_content(check_prompt)
+        return "YES" in response.text.upper()
     except Exception as e:
-        logger.error(f"Unexpected error: {str(e)}")
-        return "Sorry, something went wrong. Please try again."
+        # If check fails, let the main prompt handle it
+        print(f"Relevance check error: {e}")
+        return True
 
-@app.route("/webhook", methods=["POST"])
-def webhook():
-    """Dialogflow webhook endpoint."""
+@app.route("/")
+def home():
+    return jsonify({
+        "status": "running",
+        "service": "Kakapo Expert Chatbot API",
+        "endpoints": ["/ask", "/analyze-image"]
+    })
+
+@app.route("/ask", methods=["POST"])
+def ask_gemini():
+    """Handle text-based questions about kakapo"""
     try:
-        req = request.get_json(force=True, silent=True)
+        data = request.get_json()
+        question = data.get("question", "").strip()
         
-        if not req:
-            logger.error("Empty or invalid JSON request")
+        if not question:
+            return jsonify({"error": "No question provided"}), 400
+        
+        # Quick pre-filter (optional but helps reduce API costs)
+        if not is_kakapo_related(question):
             return jsonify({
-                "fulfillmentText": "Sorry, I received an invalid request."
-            }), 400
-        
-        query_result = req.get("queryResult", {})
-        user_query = query_result.get("queryText", "").strip()
-        
-        if not user_query:
-            logger.warning("No query text found in request")
-            return jsonify({
-                "fulfillmentText": "I didn't understand your question. Please try again."
+                "answer": "I'm sorry, I only have knowledge about kakapo, the endangered flightless parrot of New Zealand. Please ask me anything about kakapo!",
+                "on_topic": False
             })
         
-        logger.info(f"Processing query: {user_query}")
-        
-        # Get Wikipedia summary
-        answer = get_wikipedia_summary(user_query)
+        # Generate response with system prompt
+        model = genai.GenerativeModel("gemini-pro")
+        full_prompt = KAKAPO_SYSTEM_PROMPT + question
+        response = model.generate_content(full_prompt)
         
         return jsonify({
-            "fulfillmentText": answer
+            "answer": response.text,
+            "on_topic": True
         })
-    
+        
     except Exception as e:
-        logger.error(f"Webhook error: {str(e)}")
+        return jsonify({"error": f"Error processing request: {str(e)}"}), 500
+
+@app.route("/analyze-image", methods=["POST"])
+def analyze_image():
+    """Analyze images for kakapo identification or features"""
+    try:
+        data = request.get_json()
+        img_b64 = data.get("image", "")
+        question = data.get("question", "Is this a kakapo?")
+        
+        if not img_b64:
+            return jsonify({"error": "No image provided"}), 400
+        
+        # Decode Base64 → bytes for Gemini
+        img_bytes = base64.b64decode(img_b64)
+        
+        # Use Gemini Vision for kakapo-specific image analysis
+        model = genai.GenerativeModel("gemini-1.5-flash")
+        
+        # Create image part for Gemini
+        image_part = {
+            "mime_type": "image/jpeg",
+            "data": img_bytes
+        }
+        
+        prompt = f"""{KAKAPO_SYSTEM_PROMPT}
+        
+Image analysis request: {question}
+
+If the image is not related to kakapo, respond: "I can only analyze images related to kakapo. Please share a kakapo image!"
+"""
+        
+        response = model.generate_content([prompt, image_part])
+        
+        # Optional: Also do OpenCV processing for edge detection
+        img_array = np.frombuffer(img_bytes, np.uint8)
+        img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+        
+        opencv_analysis = None
+        if img is not None:
+            edges = cv2.Canny(img, 100, 200)
+            edge_count = np.sum(edges > 0)
+            opencv_analysis = {
+                "edges_detected": int(edge_count),
+                "image_shape": img.shape[:2]
+            }
+        
         return jsonify({
-            "fulfillmentText": "Sorry, there was an error processing your request."
-        }), 500
+            "answer": response.text,
+            "opencv_analysis": opencv_analysis
+        })
+        
+    except Exception as e:
+        return jsonify({"error": f"Error processing image: {str(e)}"}), 500
 
 @app.route("/health", methods=["GET"])
 def health_check():
-    return jsonify({
-        "status": "healthy",
-        "service": "Wikipedia Webhook"
-    }), 200
-
-@app.route("/test", methods=["GET"])
-def test_query():
-    """Test endpoint to verify Wikipedia API is working."""
-    test_query = request.args.get('q', 'Kakapo')
-    result = get_wikipedia_summary(test_query)
-    return jsonify({
-        "query": test_query,
-        "result": result
-    })
+    """Health check endpoint for monitoring"""
+    return jsonify({"status": "healthy"}), 200
 
 @app.errorhandler(404)
-def not_found(error):
-    return jsonify({
-        "error": "Endpoint not found"
-    }), 404
+def not_found(e):
+    return jsonify({"error": "Endpoint not found"}), 404
 
 @app.errorhandler(500)
-def internal_error(error):
-    logger.error(f"Internal server error: {str(error)}")
-    return jsonify({
-        "error": "Internal server error"
-    }), 500
+def internal_error(e):
+    return jsonify({"error": "Internal server error"}), 500
 
-if __name__ == "__main__":
-    logger.info(f"Starting Flask server on {HOST}:{PORT}")
-    app.run(
-        host=HOST,
-        port=PORT,
-        debug=os.getenv('FLASK_DEBUG', 'False').lower() == 'true'
-    )
+if __name__== "__main__":
+    # Check if API key is set
+    if not os.getenv("AIzaSyBjUrMg_DwG93K7YkfSdCnbnRMKPI0yMLA"):
+        print("⚠  WARNING: GEMINI_API_KEY not set!")
+    
+    app.run(host="0.0.0.0", port=5000, debug=False)
