@@ -42,7 +42,7 @@ def ask_gemini():
         if not question:
             return jsonify({"error": "No question provided"}), 400
 
-        model = genai.GenerativeModel("models/gemini-1.5-pro")
+        model = genai.GenerativeModel("gemini-1.5-pro")
         full_prompt = KAKAPO_SYSTEM_PROMPT + "\nUser question: " + question
         response = model.generate_content(full_prompt)
 
@@ -65,7 +65,7 @@ def analyze_image():
         img_bytes = base64.b64decode(img_b64)
 
         # Gemini Vision
-        model = genai.GenerativeModel("models/gemini-1.5-flash")
+        model = genai.GenerativeModel("gemini-1.5-flash")
         image_part = {"mime_type": "image/jpeg", "data": img_bytes}
         response = model.generate_content([KAKAPO_SYSTEM_PROMPT + "\n" + question, image_part])
 
@@ -93,7 +93,7 @@ def webhook():
         if not query:
             return jsonify({"fulfillmentText": "No query received."})
 
-        model = genai.GenerativeModel("models/gemini-1.5-pro")
+        model = genai.GenerativeModel("gemini-1.5-pro")
         full_prompt = KAKAPO_SYSTEM_PROMPT + "\nUser question: " + query
         response = model.generate_content(full_prompt)
 
