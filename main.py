@@ -36,15 +36,15 @@ def get_model(prefer_vision=False):
     # Try models in order of preference for free tier
     if prefer_vision:
         models_to_try = [
-            "gemini-2.0-flash",           # Latest free tier with vision
-            "gemini-1.5-flash",           # Stable free tier
-            "gemini-1.5-flash-latest",    # Latest stable
+            "gemini-2.0-flash",
+            "gemini-1.5-flash",
+            "gemini-1.5-flash-latest",
         ]
     else:
         models_to_try = [
-            "gemini-2.0-flash",           # Latest free tier
-            "gemini-1.5-flash",           # Stable free tier  
-            "gemini-1.5-flash-latest",    # Latest stable
+            "gemini-2.0-flash",
+            "gemini-1.5-flash",
+            "gemini-1.5-flash-latest",
         ]
     
     for model_name in models_to_try:
@@ -56,26 +56,37 @@ def get_model(prefer_vision=False):
             print(f"✅ Using model: {model_name}")
             return model
         except Exception as e:
-            print(f"⚠️  Model {model_name} not available: {str(e)}")
+            print(f"⚠️ Model {model_name} not available: {str(e)}")
             continue
     
-    # If all fail, raise error
     raise Exception("No available Gemini models found. Please check your API key and quota.")
 
 # -------------------------
 # ROUTES
 # -------------------------
+
 @app.route("/", methods=["GET"])
 def home():
     return jsonify({
         "status": "running",
         "service": "Kakapo Expert Chatbot API",
-        "endpoints": ["/ask", "/analyze-image", "/webhook", "/list-models"]
+        "endpoints": ["/ask", "/analyze-image", "/webhook", "/list-models", "/requirements"]
     })
+
+@app.route("/requirements", methods=["GET"])
+def requirements():
+    """Return all Python dependency requirements for this backend"""
+    deps = {
+        "flask": ">=3.0.0",
+        "opencv-python": ">=4.9.0",
+        "numpy": ">=1.24.0",
+        "google-generativeai": ">=0.7.0",
+        "python-dotenv": ">=1.0.0"
+    }
+    return jsonify({"requirements": deps, "count": len(deps)})
 
 @app.route("/list-models", methods=["GET"])
 def list_models():
-    """List available Gemini models for debugging"""
     try:
         if not API_KEY:
             return jsonify({"error": "GEMINI_API_KEY not set"}), 500
@@ -93,7 +104,6 @@ def list_models():
 
 @app.route("/ask", methods=["POST"])
 def ask_gemini():
-    """Direct text Q&A"""
     try:
         if not API_KEY:
             return jsonify({"error": "GEMINI_API_KEY not configured"}), 500
@@ -116,7 +126,6 @@ def ask_gemini():
 
 @app.route("/analyze-image", methods=["POST"])
 def analyze_image():
-    """Analyze kakapo-related images"""
     try:
         if not API_KEY:
             return jsonify({"error": "GEMINI_API_KEY not configured"}), 500
@@ -128,16 +137,13 @@ def analyze_image():
         if not img_b64:
             return jsonify({"error": "No image provided"}), 400
         
-        # Decode image
         img_bytes = base64.b64decode(img_b64)
-        
-        # Gemini Vision
+
         model = get_model(prefer_vision=True)
         image_part = {"mime_type": "image/jpeg", "data": img_bytes}
         prompt = KAKAPO_SYSTEM_PROMPT + "\n\n" + question
         response = model.generate_content([prompt, image_part])
-        
-        # OpenCV Edge Detection
+
         img_array = np.frombuffer(img_bytes, np.uint8)
         img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
         opencv_analysis = None
@@ -146,12 +152,12 @@ def analyze_image():
             edges = cv2.Canny(img, 100, 200)
             edge_count = int(np.sum(edges > 0))
             opencv_analysis = {
-                "edges_detected": edge_count, 
+                "edges_detected": edge_count,
                 "image_shape": list(img.shape[:2])
             }
         
         return jsonify({
-            "answer": response.text, 
+            "answer": response.text,
             "opencv_analysis": opencv_analysis
         })
     
@@ -161,7 +167,6 @@ def analyze_image():
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
-    """Dialogflow fulfillment webhook"""
     try:
         if not API_KEY:
             return jsonify({
@@ -172,7 +177,6 @@ def webhook():
         req = request.get_json(force=True)
         print(f"📨 Received webhook request: {req}")
         
-        # Extract query from Dialogflow request
         query = req.get("queryResult", {}).get("queryText", "")
         
         if not query:
@@ -181,12 +185,10 @@ def webhook():
                 "source": "kakapo-chatbot"
             })
         
-        # Generate response using Gemini
         model = get_model(prefer_vision=False)
         full_prompt = KAKAPO_SYSTEM_PROMPT + "\n\nUser question: " + query
         response = model.generate_content(full_prompt)
         
-        # Format response for Dialogflow
         dialogflow_response = {
             "fulfillmentText": response.text,
             "source": "kakapo-chatbot"
@@ -199,7 +201,6 @@ def webhook():
         error_msg = str(e)
         print(f"❌ Error in /webhook: {error_msg}")
         
-        # User-friendly error messages
         if "404" in error_msg or "not found" in error_msg:
             user_message = "I'm having trouble connecting to my AI service. Please try again in a moment."
         elif "quota" in error_msg.lower():
@@ -216,10 +217,8 @@ def webhook():
 
 @app.route("/health", methods=["GET"])
 def health_check():
-    """Health check endpoint"""
     api_key_set = bool(API_KEY)
     
-    # Try to verify API access
     can_access_api = False
     model_info = "Not checked"
     
@@ -247,13 +246,12 @@ if __name__ == "__main__":
     print("="*50)
     
     if not API_KEY:
-        print("⚠️  WARNING: GEMINI_API_KEY not set!")
+        print("⚠️ WARNING: GEMINI_API_KEY not set!")
         print("Set it with: export GEMINI_API_KEY='your-key-here'")
         print("Get your key at: https://aistudio.google.com/app/apikey")
     else:
         print("✅ GEMINI_API_KEY configured")
         
-        # Try to list available models
         try:
             print("\n📋 Checking available models...")
             models = []
@@ -264,14 +262,14 @@ if __name__ == "__main__":
             
             if models:
                 print(f"✅ Found {len(models)} available models:")
-                for model in models[:5]:  # Show first 5
+                for model in models[:5]:
                     print(f"   - {model}")
                 if len(models) > 5:
                     print(f"   ... and {len(models) - 5} more")
             else:
-                print("⚠️  No models found. Your API key may have issues.")
+                print("⚠️ No models found. Your API key may have issues.")
         except Exception as e:
-            print(f"⚠️  Could not list models: {str(e)}")
+            print(f"⚠️ Could not list models: {str(e)}")
     
     print("\n🚀 Starting server on http://0.0.0.0:5000")
     print("="*50 + "\n")
